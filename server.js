@@ -696,6 +696,187 @@ app.get("/api/calibration/export/excel", adminRequired, async (req, res) => {
   res.send(buf);
 });
 
+
+// =========================
+// Reports: Summary + Export (All-in-one)
+// =========================
+function ymdToDateUTC(s){
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(s||""));
+  if(!m) return null;
+  const dt = new Date(Date.UTC(Number(m[1]), Number(m[2])-1, Number(m[3]), 12, 0, 0));
+  if(isNaN(dt.getTime())) return null;
+  return dt;
+}
+
+function buildReportsSummary(db){
+  const assets = db.assets || [];
+  const calItems = db.calibration?.items || [];
+
+  const now = new Date();
+  const todayUTC = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0));
+  const dayMs = 24*60*60*1000;
+
+  let calOverdue = 0;
+  let calDueSoon = 0;
+  let calDueThisMonth = 0;
+  let calNoDue = 0;
+  let calWithFile = 0;
+  const calByMonth = Array.from({length:12}, ()=>0);
+
+  for(const it of calItems){
+    const dueStr = it["วันครบกำหนดสอบเทียบ"];
+    const due = ymdToDateUTC(dueStr);
+    if(!due){
+      calNoDue++;
+    }else{
+      const diffDays = Math.floor((due.getTime() - todayUTC.getTime())/dayMs);
+      if(diffDays < 0) calOverdue++;
+      else if(diffDays <= 30) calDueSoon++;
+      if(due.getUTCFullYear() === todayUTC.getUTCFullYear() && due.getUTCMonth() === todayUTC.getUTCMonth()) calDueThisMonth++;
+      calByMonth[due.getUTCMonth()]++;
+    }
+    if(String(it["ไฟล์ผลสอบเทียบ"]||"").trim()) calWithFile++;
+  }
+
+  // Maintenance summary (stored in assets)
+  const maintKey = COL.MAINT;
+  const maintByStatus = {};
+  let maintPending = 0;
+  let maintInProgress = 0;
+  let maintDone = 0;
+
+  for(const a of assets){
+    const s = String(a[maintKey] || "").trim() || "ไม่ระบุ";
+    maintByStatus[s] = (maintByStatus[s] || 0) + 1;
+
+    // heuristic buckets
+    if(s.includes("รอยืนยัน")) maintPending++;
+    else if(s.includes("ดำเนิน")) maintInProgress++;
+    else if(s.includes("เสร็จ")) maintDone++;
+  }
+
+  // Assets by location and by type/category (best-effort)
+  const locKey = COL.LOC;
+  const byLocation = {};
+  for(const a of assets){
+    const l = String(a[locKey] || "").trim() || "ไม่ระบุ";
+    byLocation[l] = (byLocation[l] || 0) + 1;
+  }
+
+  const typeKeys = ["ประเภท", "หมวดหมู่", "ชนิดครุภัณฑ์", "ประเภทเครื่องมือ", "กลุ่ม"];
+  const byType = {};
+  for(const a of assets){
+    let t = "";
+    for(const k of typeKeys){
+      if(a && a[k]){
+        t = String(a[k]).trim();
+        if(t) break;
+      }
+    }
+    t = t || "ไม่ระบุ";
+    byType[t] = (byType[t] || 0) + 1;
+  }
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    assets: { total: assets.length, byLocation, byType },
+    maintenance: { total: assets.length, pending: maintPending, inProgress: maintInProgress, done: maintDone, byStatus: maintByStatus },
+    calibration: { total: calItems.length, overdue: calOverdue, dueSoon: calDueSoon, dueThisMonth: calDueThisMonth, noDueDate: calNoDue, withFile: calWithFile, byMonth: calByMonth }
+  };
+}
+
+app.get("/api/reports/summary", authRequired, async (req, res) => {
+  const db = await readDb();
+  res.json(buildReportsSummary(db));
+});
+
+app.get("/api/reports/export/excel", adminRequired, async (req, res) => {
+  const db = await readDb();
+  const summary = buildReportsSummary(db);
+
+  const wb = XLSX.utils.book_new();
+
+  // Summary sheet (AOA)
+  const maintRows = Object.entries(summary.maintenance.byStatus || {}).sort((a,b)=>b[1]-a[1]);
+  const locRows = Object.entries(summary.assets.byLocation || {}).sort((a,b)=>b[1]-a[1]).slice(0, 30);
+  const typeRows = Object.entries(summary.assets.byType || {}).sort((a,b)=>b[1]-a[1]).slice(0, 30);
+
+  const aoa = [
+    ["UPH MEM System - รายงานสรุป (Export)"],
+    ["Generated At", summary.generatedAt],
+    [],
+    ["สรุปครุภัณฑ์"],
+    ["รวมครุภัณฑ์ทั้งหมด", summary.assets.total],
+    [],
+    ["สรุปแจ้งซ่อม/บำรุงรักษา (จากครุภัณฑ์)"],
+    ["รอยืนยัน", summary.maintenance.pending],
+    ["กำลังดำเนินการ", summary.maintenance.inProgress],
+    ["เสร็จสิ้น", summary.maintenance.done],
+    [],
+    ["สรุปแผนสอบเทียบ"],
+    ["รวมรายการสอบเทียบ", summary.calibration.total],
+    ["เกินกำหนด", summary.calibration.overdue],
+    ["ใกล้ถึงกำหนด (≤ 30 วัน)", summary.calibration.dueSoon],
+    ["กำหนดภายในเดือนนี้", summary.calibration.dueThisMonth],
+    ["ไม่มีวันครบกำหนด", summary.calibration.noDueDate],
+    ["มีไฟล์ผลสอบเทียบแนบแล้ว", summary.calibration.withFile],
+    [],
+    ["สถานะแจ้งซ่อม (แยกตามสถานะ)","จำนวน"]
+  ];
+  for(const [k,v] of maintRows) aoa.push([k, v]);
+  aoa.push([]);
+  aoa.push(["สถานที่ใช้งาน (Top 30)","จำนวน"]);
+  for(const [k,v] of locRows) aoa.push([k, v]);
+  aoa.push([]);
+  aoa.push(["ประเภท/หมวดหมู่ (Top 30)","จำนวน"]);
+  for(const [k,v] of typeRows) aoa.push([k, v]);
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+  // Full data sheets
+  const wsAssets = XLSX.utils.json_to_sheet(db.assets || []);
+  XLSX.utils.book_append_sheet(wb, wsAssets, "Assets");
+
+  const calItems = db.calibration?.items || [];
+  const wsCal = XLSX.utils.json_to_sheet(calItems);
+  XLSX.utils.book_append_sheet(wb, wsCal, "Calibration");
+
+  // Maintenance view (subset)
+  const maintView = (db.assets || []).map(a => ({
+    [COL.CODE]: a[COL.CODE] || "",
+    [COL.NAME]: a[COL.NAME] || "",
+    [COL.MODEL]: a[COL.MODEL] || "",
+    [COL.SN]: a[COL.SN] || "",
+    [COL.LOC]: a[COL.LOC] || "",
+    [COL.MAINT]: a[COL.MAINT] || "",
+    "วันที่แจ้งซ่อมล่าสุด": a["วันที่แจ้งซ่อมล่าสุด"] || "",
+    "หมายเหตุการซ่อม": a["หมายเหตุการซ่อม"] || ""
+  }));
+  const wsMaint = XLSX.utils.json_to_sheet(maintView);
+  XLSX.utils.book_append_sheet(wb, wsMaint, "Maintenance");
+
+  // Calibration attachments only
+  const fileRows = calItems
+    .filter(it => String(it["ไฟล์ผลสอบเทียบ"] || "").trim())
+    .map(it => ({
+      [COL.CODE]: it[COL.CODE] || it["รหัสเครื่องมือห้องปฏิบัติการ"] || "",
+      "ชื่อ": it["ชื่อ"] || "",
+      "วันครบกำหนดสอบเทียบ": it["วันครบกำหนดสอบเทียบ"] || "",
+      "ไฟล์ผลสอบเทียบ": it["ไฟล์ผลสอบเทียบ"] || "",
+      "ชื่อไฟล์ผลสอบเทียบ": it["ชื่อไฟล์ผลสอบเทียบ"] || ""
+    }));
+  const wsFiles = XLSX.utils.json_to_sheet(fileRows);
+  XLSX.utils.book_append_sheet(wb, wsFiles, "CalibrationFiles");
+
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  res.setHeader("Content-Disposition", "attachment; filename=UPH_MEM_reports.xlsx");
+  res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.send(buf);
+});
+
+
 /** -----------------------------
  *  Calibration CRUD (Admin)
  * ------------------------------*/

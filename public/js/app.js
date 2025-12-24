@@ -755,24 +755,248 @@ function initHScrollRanges(root){
   });
 }
 
+
 function renderReports(container){
-  setPageHeader("รายงานสรุป", "พื้นที่สำหรับรายงาน/วิเคราะห์ข้อมูลเพิ่มเติมในอนาคต");
-  const card = el("div", "card");
-  card.innerHTML = `
+  setPageHeader("รายงานสรุป", "สรุปข้อมูลจากทุกหน้า: ครุภัณฑ์ • แจ้งซ่อม/บำรุงรักษา • แผนสอบเทียบ • ไฟล์ผลสอบเทียบ พร้อมส่งออก Excel");
+
+  const isAdmin = state.user?.role === "admin";
+  const assets = state.assets || [];
+  const calItems = state.calibration || [];
+
+  // ---- helpers ----
+  const ymdToDate = (s)=>{
+    const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(s||""));
+    if(!m) return null;
+    const dt = new Date(Date.UTC(Number(m[1]), Number(m[2])-1, Number(m[3]), 12, 0, 0));
+    return isNaN(dt.getTime()) ? null : dt;
+  };
+  const today = new Date();
+  const todayUTC = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate(), 12,0,0));
+  const dayMs = 24*60*60*1000;
+
+  // ---- Assets summary ----
+  const totalAssets = assets.length;
+  const locKey = "สถานที่ใช้งาน (ปัจจุบัน)";
+  const topLocRows = groupCounts(assets, locKey).slice(0, 10);
+
+  // ---- Maintenance summary (stored in assets) ----
+  const maintKey = "สถานะแจ้งซ่อม";
+  const maintRows = groupCounts(assets, maintKey);
+  const maintPending = assets.filter(a => String(a[maintKey]||"").includes("รอยืนยัน")).length;
+  const maintInProgress = assets.filter(a => String(a[maintKey]||"").includes("ดำเนิน")).length;
+
+  // ---- Calibration summary ----
+  let calOverdue = 0, calDueSoon = 0, calNoDue = 0, calWithFile = 0;
+  const overdueList = [];
+  const soonList = [];
+  for(const it of calItems){
+    const due = ymdToDate(it["วันครบกำหนดสอบเทียบ"]);
+    const fUrl = String(it["ไฟล์ผลสอบเทียบ"]||"").trim();
+    if(fUrl) calWithFile++;
+    if(!due){ calNoDue++; continue; }
+    const diffDays = Math.floor((due.getTime() - todayUTC.getTime())/dayMs);
+    if(diffDays < 0){
+      calOverdue++;
+      overdueList.push({ it, due, diffDays });
+    }else if(diffDays <= 30){
+      calDueSoon++;
+      soonList.push({ it, due, diffDays });
+    }
+  }
+  overdueList.sort((a,b)=> a.due - b.due);
+  soonList.sort((a,b)=> a.due - b.due);
+
+  // ---- Header card + export buttons ----
+  const head = el("div", "card");
+  head.innerHTML = `
     <div class="cardHeader">
       <div>
-        <div class="cardTitle">รายงาน</div>
-        <div class="cardSub">คุณสามารถต่อยอดเพิ่ม Export PDF/Excel หรือรายงานตาม ISO ได้ในหน้านี้</div>
+        <div class="cardTitle">รายงานสรุป (รวมทุกโมดูล)</div>
+        <div class="cardSub">อัปเดตตามข้อมูลล่าสุดในระบบ (db.json) — พร้อม Export ออกเป็นไฟล์</div>
+      </div>
+      <div class="row gap8">
+        <span class="pill">ครุภัณฑ์: <b>${escapeHtml(String(totalAssets))}</b></span>
+        <span class="pill">สอบเทียบ: <b>${escapeHtml(String(calItems.length))}</b></span>
       </div>
     </div>
-    <div class="muted">
-      ✅ แนะนำ: เพิ่มปุ่ม “Export CSV/Excel” และ “สรุปตามหน่วยงาน/สถานที่ใช้งาน” ได้ทันทีในเวอร์ชันถัดไป
+
+    <div class="row gap8" style="flex-wrap:wrap;">
+      ${isAdmin ? `
+        <button id="btnExportAllReports" class="btn btnPrimary">Export รวมทุกหน้า (Excel)</button>
+        <button id="btnExportAssetsExcel2" class="btn btnGhost">Export ครุภัณฑ์ (Excel)</button>
+        <button id="btnExportCalExcel2" class="btn btnGhost">Export แผนสอบเทียบ (Excel)</button>
+      ` : `
+        <div class="alert warn" style="margin:0;">สิทธิ์ของคุณไม่สามารถ Export ได้ (ต้องเป็น Admin)</div>
+      `}
+    </div>
+
+    <div class="kpiRow" style="margin-top:14px;">
+      ${kpi("รวมครุภัณฑ์ทั้งหมด", totalAssets, "ทั้งหมด")}
+      ${kpi("แจ้งซ่อม - รอยืนยัน", maintPending, "ต้องตรวจสอบ")}
+      ${kpi("แจ้งซ่อม - กำลังดำเนินการ", maintInProgress, "ติดตามงาน")}
+      ${kpi("สอบเทียบ - เกินกำหนด", calOverdue, "ต้องดำเนินการ")}
+      ${kpi("สอบเทียบ - ใกล้ถึงกำหนด (≤30วัน)", calDueSoon, "เตรียมการ")}
+      ${kpi("ไฟล์ผลสอบเทียบที่แนบแล้ว", calWithFile, "เปิดจากตารางได้")}
     </div>
   `;
-  container.appendChild(card);
+  container.appendChild(head);
+
+  if(isAdmin){
+    $("#btnExportAllReports").addEventListener("click", async ()=>{
+      try{
+        const blob = await fetchBlob("/api/reports/export/excel");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "UPH_MEM_reports.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }catch(e){
+        toast("Export ไม่สำเร็จ: " + (e?.message||e), true);
+      }
+    });
+
+    $("#btnExportAssetsExcel2").addEventListener("click", async ()=>{
+      try{
+        const blob = await fetchBlob("/api/export/excel");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "UPH_MEM_assets.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }catch(e){
+        toast("Export ไม่สำเร็จ: " + (e?.message||e), true);
+      }
+    });
+
+    $("#btnExportCalExcel2").addEventListener("click", async ()=>{
+      try{
+        const blob = await fetchBlob("/api/calibration/export/excel");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "UPH_MEM_calibration.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }catch(e){
+        toast("Export ไม่สำเร็จ: " + (e?.message||e), true);
+      }
+    });
+  }
+
+  // ---- Detail sections ----
+  const grid = el("div", "grid2");
+
+  const maintCard = el("div", "card");
+  maintCard.style.marginBottom = "0";
+  maintCard.innerHTML = `
+    <div class="cardHeader">
+      <div>
+        <div class="cardTitle">สรุปแจ้งซ่อม/บำรุงรักษา</div>
+        <div class="cardSub">ข้อมูลจากคอลัมน์ “สถานะแจ้งซ่อม” ในรายการครุภัณฑ์</div>
+      </div>
+    </div>
+    ${miniTable(maintRows, ["label","count"], {"label":"สถานะแจ้งซ่อม","count":"จำนวน (รายการ)"})}
+  `;
+
+  const calCard = el("div", "card");
+  calCard.style.marginBottom = "0";
+
+  const calTop = overdueList.slice(0, 10);
+  const calSoonTop = soonList.slice(0, 10);
+
+  const mkCalRows = (arr, title, subtitle)=>`
+    <div style="margin-bottom:10px;">
+      <div style="font-weight:900; margin-bottom:6px;">${escapeHtml(title)}</div>
+      <div class="muted" style="margin-bottom:8px;">${escapeHtml(subtitle)}</div>
+      <div class="tableWrap">
+        <table class="clickableTable">
+          <thead>
+            <tr>
+              <th style="min-width:140px;">รหัส</th>
+              <th style="min-width:240px;">ชื่อ</th>
+              <th style="min-width:140px;">ครบกำหนด</th>
+              <th style="min-width:120px;">ไฟล์ผลสอบเทียบ</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              arr.length ? arr.map(({it,due})=>{
+                const code = escapeHtml(String(it["รหัสเครื่องมือห้องปฏิบัติการ"]||""));
+                const name = escapeHtml(String(it["ชื่อ"]||""));
+                const dueStr = escapeHtml(String(it["วันครบกำหนดสอบเทียบ"]||""));
+                const fUrl = String(it["ไฟล์ผลสอบเทียบ"]||"").trim();
+                const fName = String(it["ชื่อไฟล์ผลสอบเทียบ"]||"").trim();
+                const fileCell = fUrl
+                  ? `<a class="fileMiniBtn" href="${escapeAttr(fUrl)}" target="_blank" rel="noopener" title="${escapeAttr(fName||"เปิดไฟล์ผลสอบเทียบ")}">📎 เปิด</a>`
+                  : `<span class="muted">ไม่มีไฟล์</span>`;
+                return `<tr>
+                  <td>${code}</td>
+                  <td>${name}</td>
+                  <td>${dueStr}</td>
+                  <td>${fileCell}</td>
+                </tr>`;
+              }).join("") : `<tr><td colspan="4" class="muted">ไม่มีข้อมูล</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  calCard.innerHTML = `
+    <div class="cardHeader">
+      <div>
+        <div class="cardTitle">สรุปแผนสอบเทียบ</div>
+        <div class="cardSub">เกินกำหนด / ใกล้ถึงกำหนด (≤ 30 วัน) และการแนบไฟล์ผลสอบเทียบ</div>
+      </div>
+      <div class="row gap8">
+        <span class="pill">เกินกำหนด: <b>${escapeHtml(String(calOverdue))}</b></span>
+        <span class="pill">ใกล้ถึงกำหนด: <b>${escapeHtml(String(calDueSoon))}</b></span>
+        <span class="pill">ไม่มีวันครบกำหนด: <b>${escapeHtml(String(calNoDue))}</b></span>
+      </div>
+    </div>
+    ${mkCalRows(calTop, "รายการเกินกำหนด (Top 10)", "ควรเร่งดำเนินการสอบเทียบและแนบไฟล์ผล")}
+    ${mkCalRows(calSoonTop, "รายการใกล้ถึงกำหนด (Top 10)", "เตรียมแผนสอบเทียบล่วงหน้า")}
+  `;
+
+  grid.appendChild(maintCard);
+  grid.appendChild(calCard);
+
+  container.appendChild(grid);
+
+  // Locations summary
+  const locCard = el("div", "card");
+  locCard.innerHTML = `
+    <div class="cardHeader">
+      <div>
+        <div class="cardTitle">สรุปตามสถานที่ใช้งาน (Top 10)</div>
+        <div class="cardSub">ช่วยดูภาพรวมการกระจายครุภัณฑ์ตามหน่วยงาน/ห้อง</div>
+      </div>
+    </div>
+    ${miniTable(topLocRows, ["label","count"], {"label":"สถานที่ใช้งาน","count":"จำนวน (รายการ)"})}
+  `;
+  container.appendChild(locCard);
+
+  const tip = el("div", "card");
+  tip.innerHTML = `
+    <div class="alert info" style="margin:0;">
+      Tip: ถ้าต้องการให้รายงานนี้ “กรองตามปี/เดือน/หน่วยงาน” และทำเป็นไฟล์สรุปตาม ISO ได้
+      บอกผมได้เลย เดี๋ยวผมเพิ่มฟิลเตอร์ + Export แบบหลายชีทให้ละเอียดขึ้นอีกครับ
+    </div>
+  `;
+  container.appendChild(tip);
 }
 
 function renderQrLookup(container){
+
   setPageHeader("เปิดข้อมูลจากรหัส (QR)", "เลือกจากรายการได้เลย ไม่ต้องพิมพ์รหัสเอง (คลิกแถวเพื่อเปิดหน้า QR)");
 
   const card = el("div", "card");
@@ -1127,12 +1351,33 @@ function renderCalibration(container){
 
   const qBox = document.getElementById("calSearch");
   if (qBox){
-    qBox.value = state.calSearch || "";
+    qBox.value = state.calSearch ?? "";
+
+    // ✅ แก้บั๊ก "พิมพ์ได้ตัวเดียวแล้วพิมพ์ต่อไม่ได้"
+    // สาเหตุ: การ re-render ทั้งหน้า (render()) จะทำให้ input ถูกสร้างใหม่และเสียโฟกัส
+    // วิธีแก้: ก่อน render เก็บตำแหน่ง caret แล้วหลัง render ให้โฟกัสกลับพร้อมคืน caret
+    if (state.__restoreCalSearch){
+      const caret = Number(state.__restoreCalSearch.caret ?? (qBox.value||"").length);
+      // เคลียร์ก่อนกัน loop
+      state.__restoreCalSearch = null;
+      setTimeout(()=>{
+        const bx = document.getElementById("calSearch");
+        if(!bx) return;
+        bx.focus();
+        try{
+          const pos = Math.min(caret, (bx.value||"").length);
+          bx.setSelectionRange(pos, pos);
+        }catch(_){/* ignore */}
+      }, 0);
+    }
+
     qBox.addEventListener("input", debounce((e)=>{
-      state.calSearch = (e.target.value||"").trim();
+      const val = (e?.target?.value ?? "").toString();
+      state.calSearch = val; // trim ตอนกรองข้อมูล ไม่ trim ตอนพิมพ์เพื่อไม่ให้ caret กระโดด
       state.calPage = 1;
+      state.__restoreCalSearch = { caret: e?.target?.selectionStart ?? val.length };
       render();
-    }, 350));
+    }, 250));
   }
 
   document.getElementById("btnCalRefresh")?.addEventListener("click", async ()=>{
