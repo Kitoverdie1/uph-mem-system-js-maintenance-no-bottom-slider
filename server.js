@@ -16,6 +16,35 @@ function randomHex(len = 8) {
   return crypto.randomBytes(bytes).toString("hex").slice(0, len);
 }
 
+function generateNextCalibrationId(items = []) {
+  // Prefer sequential numeric IDs: C-000001, C-000002, ...
+  // If existing IDs are non-numeric (legacy randomHex), fall back to (count+1).
+  const existing = new Set((items || [])
+    .map(it => String(it?.id || "").trim())
+    .filter(Boolean));
+
+  let maxNum = 0;
+  let pad = 6;
+
+  for (const id of existing) {
+    const m = /^C-(\d+)$/.exec(id);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n > maxNum) maxNum = n;
+      pad = Math.max(pad, String(m[1]).length);
+    }
+  }
+
+  let nextNum = maxNum > 0 ? (maxNum + 1) : ((items?.length || 0) + 1);
+  let candidate = `C-${String(nextNum).padStart(pad, "0")}`;
+  while (existing.has(candidate)) {
+    nextNum += 1;
+    candidate = `C-${String(nextNum).padStart(pad, "0")}`;
+  }
+  return candidate;
+}
+
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -24,6 +53,38 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DB_PATH = path.join(ROOT, "db.json");
 const IMAGE_DIR = path.join(PUBLIC_DIR, "assets", "images");
 const CAL_FILE_DIR = path.join(PUBLIC_DIR, "assets", "calibration_files");
+
+// Convert a public URL like `/assets/...` (or full http(s) url pointing to it)
+// into an absolute disk path under PUBLIC_DIR. Returns empty string if invalid.
+function diskPathFromPublicUrl(url){
+  if(!url) return "";
+  let p = String(url).trim();
+  if(!p) return "";
+
+  // Strip origin if it's a full URL
+  // e.g. http://localhost:3000/assets/...
+  if(/^https?:\/\//i.test(p)){
+    try{
+      const u = new URL(p);
+      p = u.pathname || "";
+    }catch{ /* ignore */ }
+  }
+
+  // Remove query/hash
+  p = p.split("?")[0].split("#")[0];
+  if(!p) return "";
+
+  // Must point under /assets/
+  if(!p.startsWith("/assets/")) return "";
+
+  const rel = p.replace(/^\/+/, "");
+  const abs = path.join(PUBLIC_DIR, rel);
+  const norm = path.normalize(abs);
+
+  // Prevent path traversal
+  if(!norm.startsWith(path.normalize(PUBLIC_DIR + path.sep))) return "";
+  return norm;
+}
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -160,6 +221,39 @@ const excelUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 } // 25MB
 });
+
+
+// Upload (calibration result files) - disk storage
+const CAL_FILE_ALLOWED_EXT = new Set([
+  ".pdf", ".png", ".jpg", ".jpeg",
+  ".xlsx", ".xls", ".doc", ".docx"
+]);
+
+const calFileStorage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    try { await fsp.mkdir(CAL_FILE_DIR, { recursive: true }); } catch {}
+    cb(null, CAL_FILE_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase() || "";
+    const safeExt = CAL_FILE_ALLOWED_EXT.has(ext) ? ext : ".bin";
+    const safeId = String(req.params.id || "cal").replace(/[^a-zA-Z0-9_-]/g, "_");
+    cb(null, `${safeId}-${Date.now()}-${randomHex(6)}${safeExt}`);
+  }
+});
+
+const calFileUpload = multer({
+  storage: calFileStorage,
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (!CAL_FILE_ALLOWED_EXT.has(ext)) {
+      return cb(new Error("ชนิดไฟล์ไม่รองรับ (อนุญาต: PDF/รูป/Excel/Word)"));
+    }
+    cb(null, true);
+  }
+});
+
 
 // Common column names used in Excel (Thai/English) -> internal Thai columns
 const COL = {
@@ -306,8 +400,7 @@ function normalizeCalibrationRow(rawRow, sheetName=""){
     const v = row[String(m)] ?? row[`เดือน${m}`] ?? row[`Month${m}`] ?? row[`M${m}`] ?? "";
     row[String(m)] = truthyMonth(v) ? "1" : (String(v).trim() ? String(v).trim() : "");
   }
-
-  if (!row.id) row.id = "C-" + randomHex(6).toUpperCase();
+  // id will be assigned by server (sequential) when creating/importing
   return row;
 }
 
@@ -491,7 +584,14 @@ app.post("/api/import/excel", adminRequired, excelUpload.single("excel"), async 
   const ws = wb.Sheets[sheetName];
   if (!ws) return res.status(400).json({ ok: false, message: "ไม่พบชีตในไฟล์ Excel" });
 
-  const rawRows = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+  const rawRows = sheetToObjectsWithHeaderDetect(ws);
+
+  // ✅ Prevent importing calibration-plan Excel into Assets by mistake
+  const probe = (rawRows && rawRows[0]) ? rawRows[0] : {};
+  const looksCalibration = ["Due M/D/Y","Due Date","วันครบกำหนดสอบเทียบ","สอบเทียบ","ทวนสอบ","10","11","12","1","2","3"].some(k => Object.prototype.hasOwnProperty.call(probe, k));
+  if (looksCalibration) {
+    return res.status(400).json({ ok:false, message: "ไฟล์นี้ดูเหมือนไฟล์แผนสอบเทียบ กรุณานำเข้าที่หน้า \"แผนสอบเทียบ\" (ปุ่ม \"นำเข้าแผนสอบเทียบ (Excel)\" )" });
+  }
   const db = await readDb();
 
   let skipped = 0;
@@ -515,6 +615,17 @@ app.post("/api/import/excel", adminRequired, excelUpload.single("excel"), async 
   }
   const importedUnique = Array.from(mapImport.values());
 
+// Ensure each imported row has a stable sequential id (C-000001, ...)
+// If the file doesn't contain id, we generate it; if it has duplicates, we regenerate.
+const assignedImported = [];
+for (const row of importedUnique) {
+  const requested = String(row.id || "").trim();
+  const dup = requested ? assignedImported.some(x => String(x?.id||"") === requested) : false;
+  row.id = (requested && !dup) ? requested : generateNextCalibrationId(assignedImported);
+  assignedImported.push(row);
+}
+
+
   let created = 0;
   let updated = 0;
 
@@ -526,7 +637,7 @@ app.post("/api/import/excel", adminRequired, excelUpload.single("excel"), async 
     const existing = db.assets || [];
     const mapExisting = new Map(existing.map(a => [String(a[COL.CODE] || "").trim(), a]));
 
-    for (const inc of importedUnique) {
+    for (const inc of assignedImported) {
       const code = String(inc[COL.CODE] || "").trim();
       if (!code) continue;
 
@@ -625,12 +736,35 @@ app.post("/api/calibration/import", adminRequired, excelUpload.single("excel"), 
   }
   const importedUnique = Array.from(mapImport.values());
 
+
+// ✅ Ensure imported rows have sequential id (C-000001, ...) and never collide
+const assignedImported = [];
+const existingForId = (mode === "replace") ? [] : (db.calibration.items || []);
+const isIdTaken = (id)=> {
+  const sid = String(id||"").trim();
+  if (!sid) return true;
+  if (assignedImported.some(x => String(x?.id||"").trim() === sid)) return true;
+  if (existingForId.some(x => String(x?.id||"").trim() === sid)) return true;
+  return false;
+};
+
+for (const row of importedUnique) {
+  const requested = String(row.id || "").trim();
+  if (requested && !isIdTaken(requested)) {
+    row.id = requested;
+  } else {
+    // generate based on both existing + assigned to avoid duplicates
+    row.id = generateNextCalibrationId([...existingForId, ...assignedImported]);
+  }
+  assignedImported.push(row);
+}
+
   let created = 0;
   let updated = 0;
 
   if (mode === "replace") {
-    db.calibration.items = importedUnique;
-    created = importedUnique.length;
+    db.calibration.items = assignedImported;
+    created = assignedImported.length;
   } else {
     // merge by code when code exists, else append
     const existing = db.calibration.items || [];
@@ -641,7 +775,7 @@ app.post("/api/calibration/import", adminRequired, excelUpload.single("excel"), 
     }
     const mergedList = [...existing];
 
-    for (const inc of importedUnique) {
+    for (const inc of assignedImported) {
       const code = String(inc[COL.CODE] || "").trim();
       if (code && mapExisting.has(code)) {
         const cur = mapExisting.get(code);
@@ -652,6 +786,9 @@ app.post("/api/calibration/import", adminRequired, excelUpload.single("excel"), 
         if (idx >= 0) mergedList[idx] = merged;
         updated++;
       } else {
+        if (!String(inc.id || "").trim() || mergedList.some(x => String(x?.id||"") === String(inc.id||""))) {
+          inc.id = generateNextCalibrationId(mergedList);
+        }
         mergedList.push(inc);
         if (code) mapExisting.set(code, inc);
         created++;
@@ -668,7 +805,7 @@ app.post("/api/calibration/import", adminRequired, excelUpload.single("excel"), 
   };
 
   await writeDb(db);
-  res.json({ ok: true, mode, imported: importedUnique.length, created, updated, skipped, sheets: sheetNames });
+  res.json({ ok: true, mode, imported: assignedImported.length, created, updated, skipped, sheets: sheetNames });
 });
 
 app.get("/api/calibration/export/excel", adminRequired, async (req, res) => {
@@ -880,6 +1017,14 @@ app.get("/api/reports/export/excel", adminRequired, async (req, res) => {
 /** -----------------------------
  *  Calibration CRUD (Admin)
  * ------------------------------*/
+
+app.get("/api/calibration/next-id", adminRequired, async (req, res) => {
+  const db = await readDb();
+  ensureDbSchema(db);
+  const nextId = generateNextCalibrationId(db.calibration.items || []);
+  res.json({ ok: true, nextId });
+});
+
 app.post("/api/calibration", adminRequired, async (req, res) => {
   const db = await readDb();
   ensureDbSchema(db);
@@ -888,8 +1033,14 @@ app.post("/api/calibration", adminRequired, async (req, res) => {
   const norm = normalizeCalibrationRow(incoming, "");
   if (!norm) return res.status(400).json({ ok:false, message: "ข้อมูลไม่ครบ (ต้องมีรหัส/ชื่อ/SN อย่างน้อย 1 อย่าง)" });
 
-  norm.id = "C-" + randomHex(6).toUpperCase();
-  db.calibration.items.push(norm);
+  const items = db.calibration.items || [];
+  const requestedId = String(incoming.id || "").trim();
+  const exists = requestedId ? items.some(x => String(x?.id||"") === requestedId) : false;
+  norm.id = (requestedId && !exists) ? requestedId : generateNextCalibrationId(items);
+
+  items.push(norm);
+  db.calibration.items = items;
+
   await writeDb(db);
   res.json({ ok:true, item: norm });
 });

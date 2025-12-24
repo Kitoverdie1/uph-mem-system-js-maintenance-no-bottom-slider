@@ -22,6 +22,9 @@ const API = {
 async listCalibration(){
   return fetchJson("/api/calibration");
 },
+async nextCalibrationId(){
+  return fetchJson("/api/calibration/next-id");
+},
 async importCalibrationExcel(file, mode="replace"){
   const fd = new FormData();
   fd.append("excel", file);
@@ -88,6 +91,7 @@ const state = {
   assets: [],
   calibration: [],
   calibrationMeta: null,
+  calNewId: "",
   calibrationLoaded: false,
   calibrationLoading: false,
   calibrationLoadError: "",
@@ -1254,6 +1258,36 @@ function calibrationTable(items){
   return `<table class="clickableTable"><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="${cols.length}" class="muted">ไม่มีข้อมูล</td></tr>`}</tbody></table>`;
 }
 
+// รายการกำหนดสอบเทียบตามเดือนที่เลือก (แสดงใต้กราฟ)
+function calibrationMonthListTable(items){
+  const cols = [
+    "รหัสเครื่องมือห้องปฏิบัติการ",
+    "ชื่อ",
+    "สถานที่ใช้งาน (ปัจจุบัน)",
+    "วันครบกำหนดสอบเทียบ",
+    "สถานะ",
+    "ไฟล์ผลสอบเทียบ"
+  ];
+  const head = cols.map(c=>`<th>${escapeHtml(c)}</th>`).join("");
+  const body = items.map(a=>{
+    const [cls, txt] = badgeCal(a);
+    const fUrl = String(a["ไฟล์ผลสอบเทียบ"]||"").trim();
+    const fName = String(a["ชื่อไฟล์ผลสอบเทียบ"]||"").trim();
+    const fileCell = fUrl
+      ? `<a class="fileMiniBtn calFileLink" href="${escapeAttr(fUrl)}" target="_blank" rel="noopener" title="${escapeAttr(fName || "เปิดไฟล์ผลสอบเทียบ")}">📎 เปิด</a>`
+      : `<span class="muted">-</span>`;
+    return `<tr data-id="${escapeHtml(a.id)}">
+      <td class="nowrap">${escapeHtml(a["รหัสเครื่องมือห้องปฏิบัติการ"]||"")}</td>
+      <td>${escapeHtml(a["ชื่อ"]||"")}</td>
+      <td>${escapeHtml(a["สถานที่ใช้งาน (ปัจจุบัน)"]||"")}</td>
+      <td class="nowrap">${escapeHtml(a["วันครบกำหนดสอบเทียบ"]||"")}</td>
+      <td><span class="badge ${cls}">${escapeHtml(txt)}</span></td>
+      <td class="nowrap">${fileCell}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="clickableTable"><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="${cols.length}" class="muted">ไม่มีรายการในเดือนที่เลือก</td></tr>`}</tbody></table>`;
+}
+
 function renderCalibration(container){
   setPageHeader("แผนสอบเทียบ", "สรุปกำหนดสอบเทียบ • กรองตามปี/เดือน • เตือนล่วงหน้า 1 เดือน (Admin สามารถนำเข้า/ส่งออก Excel)");
 
@@ -1401,8 +1435,16 @@ function renderCalibration(container){
 
   // Add new item
   if (isAdmin){
-    document.getElementById("btnCalAdd")?.addEventListener("click", ()=>{
+    document.getElementById("btnCalAdd")?.addEventListener("click", async ()=>{
       state.calSelectedId = "__NEW__";
+      state.calNewId = "__LOADING__";
+      render();
+      try{
+        const r = await API.nextCalibrationId();
+        state.calNewId = r.nextId || "";
+      }catch(_){
+        state.calNewId = "";
+      }
       render();
       setTimeout(()=>{
         document.getElementById("calDetail")?.scrollIntoView({ behavior:"smooth", block:"start" });
@@ -1549,6 +1591,52 @@ function renderCalibration(container){
   `;
   container.appendChild(chartCard);
 
+  // List: items due in selected month (ตามที่ขอ: แสดงว่าเดือนนี้มีเครื่องมืออะไรบ้างที่กำลังจะสอบเทียบ)
+  const monthNames2 = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
+  const monthItemsSorted = [...yearMonthItems].sort((a,b)=>{
+    const da = parseYMD(a["วันครบกำหนดสอบเทียบ"]);
+    const db = parseYMD(b["วันครบกำหนดสอบเทียบ"]);
+    const ta = da ? da.getTime() : Number.POSITIVE_INFINITY;
+    const tb = db ? db.getTime() : Number.POSITIVE_INFINITY;
+    if (ta !== tb) return ta - tb;
+    const ca = (a["รหัสเครื่องมือห้องปฏิบัติการ"]||"").toString();
+    const cb = (b["รหัสเครื่องมือห้องปฏิบัติการ"]||"").toString();
+    return ca.localeCompare(cb);
+  });
+
+  const monthListCard = el("div","card");
+  monthListCard.innerHTML = `
+    <div class="cardHeader">
+      <div>
+        <div class="cardTitle">รายการที่จะสอบเทียบในเดือน ${escapeHtml(monthNames2[month-1] || String(month))} ${escapeHtml(String(year))}</div>
+        <div class="cardSub">แสดงรายการที่มี “วันครบกำหนดสอบเทียบ” อยู่ในเดือนที่เลือก หรือถูกทำเครื่องหมายในแผนเดือน 1-12</div>
+      </div>
+      <div class="row gap8" style="flex-wrap:wrap;">
+        <span class="pill">${escapeHtml(String(monthItemsSorted.length))} รายการ</span>
+      </div>
+    </div>
+    <div class="tableWrap" id="calMonthListWrap" style="max-height:360px; overflow:auto;"></div>
+  `;
+  container.appendChild(monthListCard);
+
+  const monthWrap = document.getElementById("calMonthListWrap");
+  if (monthWrap) monthWrap.innerHTML = calibrationMonthListTable(monthItemsSorted);
+
+  // click to open detail from month list
+  monthWrap?.querySelectorAll("tr[data-id]")?.forEach(tr=>{
+    tr.addEventListener("click", ()=>{
+      const id = tr.getAttribute("data-id");
+      state.calSelectedId = id;
+      state.calNewId = "";
+      renderCalDetail();
+      document.getElementById("calDetail")?.scrollIntoView({ behavior:"smooth", block:"start" });
+    });
+  });
+  // prevent row click when opening file
+  monthWrap?.querySelectorAll("a.calFileLink")?.forEach(a=>{
+    a.addEventListener("click", (e)=>{ e.stopPropagation(); });
+  });
+
   // Table (full width - ตามที่ต้องการ "ตารางอยู่ด้านล่าง")
   const tableCard = el("div","card");
   tableCard.innerHTML = `
@@ -1581,8 +1669,16 @@ function renderCalibration(container){
   container.appendChild(detailCard);
 
   // secondary add button (in table header)
-  document.getElementById("btnCalAdd2")?.addEventListener("click", ()=>{
+  document.getElementById("btnCalAdd2")?.addEventListener("click", async ()=>{
     state.calSelectedId = "__NEW__";
+    state.calNewId = "__LOADING__";
+    renderCalDetail();
+    try{
+      const r = await API.nextCalibrationId();
+      state.calNewId = r.nextId || "";
+    }catch(_){
+      state.calNewId = "";
+    }
     renderCalDetail();
     document.getElementById("calDetail")?.scrollIntoView({ behavior:"smooth", block:"start" });
   });
@@ -1599,6 +1695,7 @@ function renderCalibration(container){
     tr.addEventListener("click", ()=>{
       const id = tr.getAttribute("data-id");
       state.calSelectedId = id;
+      state.calNewId = "";
       renderCalDetail();
     });
   });
@@ -1691,7 +1788,7 @@ function renderCalibration(container){
     target.innerHTML = `
       <div class="row gap8" style="flex-wrap:wrap; margin-bottom:10px;">
         <span class="pill">สถานะ: <b><span class="badge ${cls}">${escapeHtml(txt)}</span></b></span>
-        ${found ? `<span class="pill">ID: <b>${escapeHtml(found.id)}</b></span>` : `<span class="pill">กำลังเพิ่มรายการใหม่</span>`}
+        ${found ? `<span class="pill">ID: <b>${escapeHtml(found.id)}</b></span>` : (state.calNewId === "__LOADING__" ? `<span class="pill">กำลังสร้างรหัส...</span>` : (state.calNewId ? `<span class="pill">ID: <b>${escapeHtml(state.calNewId)}</b></span>` : `<span class="pill">กำลังเพิ่มรายการใหม่</span>`))}
       </div>
 
       <div class="grid2">
@@ -1847,8 +1944,10 @@ document.getElementById("btnCalDelFile")?.addEventListener("click", async ()=>{
           const r = await API.updateCalibration(found.id, payload);
           saved = r.item;
         } else {
+          if (state.calNewId && state.calNewId !== "__LOADING__") payload.id = state.calNewId;
           const r = await API.createCalibration(payload);
           saved = r.item;
+          state.calNewId = "";
         }
 
         state.calibration = [];
