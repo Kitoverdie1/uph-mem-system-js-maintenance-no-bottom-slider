@@ -23,6 +23,7 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DB_PATH = path.join(ROOT, "db.json");
 const IMAGE_DIR = path.join(PUBLIC_DIR, "assets", "images");
+const CAL_FILE_DIR = path.join(PUBLIC_DIR, "assets", "calibration_files");
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -672,7 +673,18 @@ app.post("/api/calibration/import", adminRequired, excelUpload.single("excel"), 
 
 app.get("/api/calibration/export/excel", adminRequired, async (req, res) => {
   const db = await readDb();
-  const items = db.calibration?.items || [];
+  const base = `${req.protocol}://${req.get("host")}`;
+  const items = (db.calibration?.items || []).map(it => {
+    const out = { ...it };
+    const u = String(out["ไฟล์ผลสอบเทียบ"] || "").trim();
+    if (u) {
+      out["ไฟล์ผลสอบเทียบ"] = /^https?:\/\//i.test(u) ? u : (base + (u.startsWith("/") ? u : ("/" + u)));
+    } else {
+      out["ไฟล์ผลสอบเทียบ"] = "";
+    }
+    return out;
+  });
+
   const ws = XLSX.utils.json_to_sheet(items);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Calibration");
@@ -720,14 +732,91 @@ app.put("/api/calibration/:id", adminRequired, async (req, res) => {
   res.json({ ok:true, item: norm });
 });
 
+/** -----------------------------
+ *  Calibration file attach (Admin)
+ * ------------------------------*/
+app.post("/api/calibration/:id/file", adminRequired, (req, res, next) => {
+  // multer error handling
+  calFileUpload.single("file")(req, res, (err) => {
+    if (err) return res.status(400).json({ ok: false, message: err.message || "อัปโหลดไฟล์ไม่สำเร็จ" });
+    next();
+  });
+}, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const file = req.file;
+  if (!file) return res.status(400).json({ ok:false, message: "ไม่พบไฟล์" });
+
+  const db = await readDb();
+  ensureDbSchema(db);
+
+  const idx = (db.calibration.items || []).findIndex(x => String(x?.id||"") === id);
+  if (idx < 0) {
+    // cleanup orphan file
+    try { await fsp.unlink(file.path); } catch {}
+    return res.status(404).json({ ok:false, message: "ไม่พบรายการสอบเทียบ" });
+  }
+
+  const cur = db.calibration.items[idx] || {};
+  // delete old file if any
+  const oldUrl = cur["ไฟล์ผลสอบเทียบ"];
+  const oldDisk = diskPathFromPublicUrl(oldUrl);
+  if (oldDisk) {
+    try { await fsp.unlink(oldDisk); } catch {}
+  }
+
+  const publicUrl = `/assets/calibration_files/${path.basename(file.path)}`;
+  db.calibration.items[idx] = {
+    ...cur,
+    "ไฟล์ผลสอบเทียบ": publicUrl,
+    "ชื่อไฟล์ผลสอบเทียบ": file.originalname || path.basename(file.path),
+    id: cur.id
+  };
+
+  await writeDb(db);
+  res.json({ ok:true, url: publicUrl, name: db.calibration.items[idx]["ชื่อไฟล์ผลสอบเทียบ"] });
+});
+
+app.delete("/api/calibration/:id/file", adminRequired, async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const db = await readDb();
+  ensureDbSchema(db);
+
+  const idx = (db.calibration.items || []).findIndex(x => String(x?.id||"") === id);
+  if (idx < 0) return res.status(404).json({ ok:false, message: "ไม่พบรายการสอบเทียบ" });
+
+  const cur = db.calibration.items[idx] || {};
+  const oldUrl = cur["ไฟล์ผลสอบเทียบ"];
+  const oldDisk = diskPathFromPublicUrl(oldUrl);
+  if (oldDisk) {
+    try { await fsp.unlink(oldDisk); } catch {}
+  }
+
+  db.calibration.items[idx] = {
+    ...cur,
+    "ไฟล์ผลสอบเทียบ": "",
+    "ชื่อไฟล์ผลสอบเทียบ": "",
+    id: cur.id
+  };
+  await writeDb(db);
+  res.json({ ok:true });
+});
+
 app.delete("/api/calibration/:id", adminRequired, async (req, res) => {
   const id = String(req.params.id || "").trim();
   const db = await readDb();
   ensureDbSchema(db);
 
-  const before = db.calibration.items.length;
+  const target = (db.calibration.items || []).find(x => String(x?.id||"") === id);
+  if (!target) return res.status(404).json({ ok:false, message: "ไม่พบรายการ" });
+
+  // delete attached file if any
+  const oldUrl = target["ไฟล์ผลสอบเทียบ"];
+  const oldDisk = diskPathFromPublicUrl(oldUrl);
+  if (oldDisk) {
+    try { await fsp.unlink(oldDisk); } catch {}
+  }
+
   db.calibration.items = (db.calibration.items || []).filter(x => String(x?.id||"") !== id);
-  if (db.calibration.items.length === before) return res.status(404).json({ ok:false, message: "ไม่พบรายการ" });
 
   await writeDb(db);
   res.json({ ok:true });

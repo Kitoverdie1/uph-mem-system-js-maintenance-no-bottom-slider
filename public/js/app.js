@@ -40,6 +40,24 @@ async updateCalibration(id, updates){
 async deleteCalibration(id){
   return fetchJson(`/api/calibration/${encodeURIComponent(id)}`, { method:"DELETE" });
 },
+
+async uploadCalibrationFile(id, file){
+  const fd = new FormData();
+  fd.append("file", file);
+  return fetchJson(`/api/calibration/${encodeURIComponent(id)}/file`, { method:"POST", body: fd, isForm:true });
+},
+async deleteCalibrationFile(id){
+  return fetchJson(`/api/calibration/${encodeURIComponent(id)}/file`, { method:"DELETE" });
+},
+
+async uploadCalibrationFile(id, file){
+  const fd = new FormData();
+  fd.append("file", file);
+  return fetchJson(`/api/calibration/${encodeURIComponent(id)}/file`, { method:"POST", body: fd, isForm:true });
+},
+async deleteCalibrationFile(id){
+  return fetchJson(`/api/calibration/${encodeURIComponent(id)}/file`, { method:"DELETE" });
+},
 async exportDbJson(){
   return fetchBlob(`/api/export/db`);
 },
@@ -985,11 +1003,17 @@ function calibrationTable(items){
     "วันที่สอบเทียบล่าสุด",
     "วันครบกำหนดสอบเทียบ",
     "สถานะสอบเทียบ",
-    "หมายเหตุ"
+    "หมายเหตุ",
+    "ไฟล์ผลสอบเทียบ"
   ];
   const head = cols.map(c=>`<th>${escapeHtml(c)}</th>`).join("");
   const body = items.map(a=>{
     const [cls, txt] = badgeCal(a);
+    const fUrl = String(a["ไฟล์ผลสอบเทียบ"]||"").trim();
+    const fName = String(a["ชื่อไฟล์ผลสอบเทียบ"]||"").trim();
+    const fileCell = fUrl
+      ? `<a class="fileMiniBtn calFileLink" href="${escapeAttr(fUrl)}" target="_blank" rel="noopener" title="${escapeAttr(fName || "เปิดไฟล์ผลสอบเทียบ")}">📎 เปิด</a>`
+      : `<span class="muted">-</span>`;
     return `<tr data-id="${escapeHtml(a.id)}">
       <td class="nowrap">${escapeHtml(a["รหัสเครื่องมือห้องปฏิบัติการ"]||"")}</td>
       <td>${escapeHtml(a["ชื่อ"]||"")}</td>
@@ -1000,6 +1024,7 @@ function calibrationTable(items){
       <td class="nowrap">${escapeHtml(a["วันครบกำหนดสอบเทียบ"]||"")}</td>
       <td><span class="badge ${cls}">${escapeHtml(txt)}</span></td>
       <td>${escapeHtml(a["หมายเหตุ"]||"")}</td>
+      <td class="nowrap">${fileCell}</td>
     </tr>`;
   }).join("");
   return `<table class="clickableTable"><thead><tr>${head}</tr></thead><tbody>${body || `<tr><td colspan="${cols.length}" class="muted">ไม่มีข้อมูล</td></tr>`}</tbody></table>`;
@@ -1333,6 +1358,14 @@ function renderCalibration(container){
     });
   });
 
+  // Allow opening attached calibration file directly from the table
+  // (prevent triggering row selection when clicking the file link)
+  tableWrap?.querySelectorAll("a.calFileLink")?.forEach(a=>{
+    a.addEventListener("click", (e)=>{
+      e.stopPropagation();
+    });
+  });
+
   // Chart
   renderCalChart(filtered, year);
 
@@ -1367,15 +1400,24 @@ function renderCalibration(container){
       "ทวนสอบ":"",
       "Asset ID":"",
       "ผู้ผลิต":"",
-      "หมายเหตุ":""
+      "หมายเหตุ":"",
+      "ไฟล์ผลสอบเทียบ":"",
+      "ชื่อไฟล์ผลสอบเทียบ":""
     };
 
     const [cls, txt] = badgeCal(item);
+
+    const fileUrl = String(item["ไฟล์ผลสอบเทียบ"]||"").trim();
+    const fileName = String(item["ชื่อไฟล์ผลสอบเทียบ"]||"").trim();
 
     // non-admin -> read-only view
     if (!isAdmin){
       const due = parseYMD(item["วันครบกำหนดสอบเทียบ"]);
       const last = parseYMD(item["วันที่สอบเทียบล่าสุด"]);
+      const fUrl = String(item["ไฟล์ผลสอบเทียบ"]||"").trim();
+      const fName = String(item["ชื่อไฟล์ผลสอบเทียบ"]||"").trim();
+      const fileHtml = fUrl ? `<a href="${escapeAttr(fUrl)}" target="_blank" rel="noopener">${escapeHtml(fName || "เปิดไฟล์ผลสอบเทียบ")}</a>` : `<span class="muted">ไม่มีไฟล์แนบ</span>`;
+
       target.innerHTML = `
         <div class="kv">
           ${kvRow("รหัสเครื่องมือ", item["รหัสเครื่องมือห้องปฏิบัติการ"])}
@@ -1386,6 +1428,7 @@ function renderCalibration(container){
           ${kvRow("วันที่สอบเทียบล่าสุด", last ? fmtDate(last) : (item["วันที่สอบเทียบล่าสุด"]||"-"))}
           ${kvRow("วันครบกำหนดสอบเทียบ", due ? fmtDate(due) : (item["วันครบกำหนดสอบเทียบ"]||"-"))}
           ${kvRow("สถานะสอบเทียบ", `<span class="badge ${cls}">${escapeHtml(txt)}</span>`, true)}
+          ${kvRow("ไฟล์ผลสอบเทียบ", fileHtml, true)}
           ${kvRow("หมายเหตุ", item["หมายเหตุ"]||"-")}
         </div>
       `;
@@ -1437,6 +1480,23 @@ function renderCalibration(container){
         <textarea id="cal_note" rows="3" style="width:100%; border:1px solid var(--border); border-radius:16px; padding:10px 12px;">${escapeHtml(item["หมายเหตุ"]||"")}</textarea>
       </div>
 
+<div class="field">
+  <label>แนบไฟล์ผลสอบเทียบ (PDF/รูป/Excel/Word)</label>
+  ${found ? `
+    <div class="row gap8" style="flex-wrap:wrap;">
+      <input id="calFileInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls,.doc,.docx" style="display:none" />
+      <button type="button" id="btnCalPickFile" class="btn btnGhost">เลือกไฟล์</button>
+      ${fileUrl ? `<a class="btn btnGhost" href="${escapeAttr(fileUrl)}" target="_blank" rel="noopener">เปิดไฟล์</a>` : ``}
+      ${fileUrl ? `<button type="button" id="btnCalDelFile" class="btn btnDanger">ลบไฟล์</button>` : ``}
+    </div>
+    <div class="muted tiny" style="margin-top:6px;">
+      ${fileUrl ? `ไฟล์ปัจจุบัน: <b>${escapeHtml(fileName || (fileUrl.split("/").pop() || "ไฟล์ผลสอบเทียบ"))}</b>` : "ยังไม่มีไฟล์แนบ"}
+    </div>
+  ` : `
+    <div class="muted">* กรุณาบันทึกรายการก่อน แล้วจึงแนบไฟล์ได้</div>
+  `}
+</div>
+
       <div class="field">
         <label>แผนเดือน 1-12 (กดเพื่อสลับ ✓/—)</label>
         <div class="row gap8" style="flex-wrap:wrap;" id="calMonthWrap">${monthBtns}</div>
@@ -1461,6 +1521,59 @@ function renderCalibration(container){
         btn.innerHTML = `${monthNames[m-1]} ${on?"✓":"—"}`;
       });
     });
+
+
+// calibration file attach
+document.getElementById("btnCalPickFile")?.addEventListener("click", ()=> document.getElementById("calFileInput")?.click());
+
+document.getElementById("calFileInput")?.addEventListener("change", async (e)=>{
+  const file = e.target.files?.[0];
+  e.target.value = "";
+  if(!file || !found) return;
+  try{
+    await API.uploadCalibrationFile(found.id, file);
+    state.calibration = [];
+    state.calibrationLoaded = false;
+    state.calibrationLoading = false;
+    state.calibrationLoadError = "";
+    await ensureCalibrationLoaded();
+    state.calSelectedId = found.id;
+
+    const ok = document.getElementById("calMsg");
+    if(ok){
+      ok.textContent = "แนบไฟล์ผลสอบเทียบสำเร็จ";
+      ok.classList.remove("hidden");
+      setTimeout(()=> ok.classList.add("hidden"), 2500);
+    }
+    render();
+  }catch(err){
+    alert(err?.message || "แนบไฟล์ไม่สำเร็จ");
+  }
+});
+
+document.getElementById("btnCalDelFile")?.addEventListener("click", async ()=>{
+  if(!found) return;
+  if(!confirm("ยืนยันลบไฟล์ผลสอบเทียบของรายการนี้?")) return;
+  try{
+    await API.deleteCalibrationFile(found.id);
+    state.calibration = [];
+    state.calibrationLoaded = false;
+    state.calibrationLoading = false;
+    state.calibrationLoadError = "";
+    await ensureCalibrationLoaded();
+    state.calSelectedId = found.id;
+
+    const ok = document.getElementById("calMsg");
+    if(ok){
+      ok.textContent = "ลบไฟล์แนบแล้ว";
+      ok.classList.remove("hidden");
+      setTimeout(()=> ok.classList.add("hidden"), 2500);
+    }
+    render();
+  }catch(err){
+    alert(err?.message || "ลบไฟล์ไม่สำเร็จ");
+  }
+});
 
     document.getElementById("btnCalSave")?.addEventListener("click", async ()=>{
       const payload = {
