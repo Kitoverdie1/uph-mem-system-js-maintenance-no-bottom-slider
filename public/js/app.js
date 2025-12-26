@@ -1608,6 +1608,8 @@ function renderCalibration(container){
   });
 
   const monthListCard = el("div","card");
+  // ใช้สำหรับ scroll ไปยังรายการของเดือนที่กดจากกราฟ
+  monthListCard.id = "calMonthListCard";
   monthListCard.innerHTML = `
     <div class="cardHeader">
       <div>
@@ -1716,6 +1718,15 @@ function renderCalibration(container){
 
   // Chart
   renderCalChart(filtered, year);
+
+  // ✅ ล็อคหน้าจอหลังคลิกกราฟ: คืนตำแหน่ง scroll เดิม (กันหน้าเด้ง/เลื่อนเอง)
+  if(state.__restoreScrollY != null){
+    const y = Number(state.__restoreScrollY) || 0;
+    state.__restoreScrollY = null;
+    setTimeout(()=>{
+      window.scrollTo({ top: y, left: 0, behavior: "auto" });
+    }, 0);
+  }
 
   // Auto render detail if selected
   renderCalDetail();
@@ -2079,6 +2090,25 @@ function renderCalChart(items, year){
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      // ✅ คลิกที่แท่งกราฟเพื่อดูรายการเครื่องมือ/อุปกรณ์ที่จะสอบเทียบในเดือนนั้น
+      onClick: (_evt, activeEls)=>{
+        try{
+          if(!activeEls || !activeEls.length) return;
+          const idx = Number(activeEls[0].index);
+          if(!Number.isFinite(idx)) return;
+
+          // ✅ ล็อคหน้าจอ: เก็บตำแหน่ง scroll ก่อน render เพื่อไม่ให้หน้าเด้ง/เลื่อนเอง
+          state.__restoreScrollY = window.scrollY;
+
+          state.calMonth = Math.max(1, Math.min(12, idx + 1));
+          render();
+        }catch(_){/* ignore */}
+      },
+      onHover: (evt, activeEls)=>{
+        // เปลี่ยน cursor ให้รู้ว่ากดได้
+        const el = evt?.native?.target;
+        if(el && el.style) el.style.cursor = (activeEls && activeEls.length) ? 'pointer' : 'default';
+      },
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
