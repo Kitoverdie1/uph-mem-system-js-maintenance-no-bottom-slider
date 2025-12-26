@@ -275,8 +275,8 @@ body{
 .topbarRight{ display:flex; gap:10px; align-items:center; }
 
 .content{
-  margin-top: 14px;
-  max-width: 1200px;
+  margin: 14px auto 0;
+  max-width: 1360px;
 }
 
 /* cards */
@@ -315,6 +315,23 @@ body{
   display:grid;
   grid-template-columns: 1fr 1fr;
   gap:12px;
+}
+
+/* Calibration: chart + month list side-by-side on wide screens */
+.gridCal{
+  display:grid;
+  grid-template-columns: 1.8fr 1fr;
+  gap:12px;
+  align-items:stretch;
+}
+.gridCal > *{ min-width:0; }
+.chartWrap{
+  height: 360px;
+  padding: 6px 4px 2px 4px;
+}
+@media (max-width: 1100px){
+  .gridCal{ grid-template-columns: 1fr; }
+  .chartWrap{ height: 320px; }
 }
 
 /* Maintenance layout: left summary + right tables */

@@ -1578,7 +1578,7 @@ function renderCalibration(container){
     }
   }
 
-  // Chart (full width)
+  // Chart + Month list (side-by-side on wide screens)
   const chartCard = el("div","card");
   chartCard.innerHTML = `
     <div class="cardHeader">
@@ -1586,10 +1586,13 @@ function renderCalibration(container){
         <div class="cardTitle">กราฟสรุปแผนสอบเทียบรายเดือน</div>
         <div class="cardSub">จำนวนรายการตาม “วันครบกำหนดสอบเทียบ” (ปีที่เลือก) — ใช้ประกอบการติดตาม/เตือน</div>
       </div>
+      <div class="row gap8" style="flex-wrap:wrap; justify-content:flex-end;">
+        <span class="pill">ปี ${escapeHtml(String(year))}</span>
+        <span class="pill">รวม ${escapeHtml(String(filtered.length))} รายการ</span>
+      </div>
     </div>
-    <canvas id="calChart" height="230"></canvas>
+    <div class="chartWrap"><canvas id="calChart"></canvas></div>
   `;
-  container.appendChild(chartCard);
 
   // List: items due in selected month (ตามที่ขอ: แสดงว่าเดือนนี้มีเครื่องมืออะไรบ้างที่กำลังจะสอบเทียบ)
   const monthNames2 = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
@@ -1617,7 +1620,10 @@ function renderCalibration(container){
     </div>
     <div class="tableWrap" id="calMonthListWrap" style="max-height:360px; overflow:auto;"></div>
   `;
-  container.appendChild(monthListCard);
+  const calGrid = el("div","gridCal");
+  calGrid.appendChild(chartCard);
+  calGrid.appendChild(monthListCard);
+  container.appendChild(calGrid);
 
   const monthWrap = document.getElementById("calMonthListWrap");
   if (monthWrap) monthWrap.innerHTML = calibrationMonthListTable(monthItemsSorted);
@@ -2008,7 +2014,6 @@ function renderCalChart(items, year){
   }
 
   const monthCounts = Array.from({length:12}, ()=>0);
-
   for(const a of items){
     const due = parseYMD(a["วันครบกำหนดสอบเทียบ"]);
     if (due && due.getFullYear() === year){
@@ -2018,21 +2023,88 @@ function renderCalChart(items, year){
 
   const labels = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
 
+  const selectedIdx = Math.max(0, Math.min(11, (Number(state.calMonth)||1)-1));
+
+  const valueLabelPlugin = {
+    id: 'valueLabel',
+    afterDatasetsDraw(chart, args, pluginOptions){
+      const { ctx } = chart;
+      const meta = chart.getDatasetMeta(0);
+      if (!meta || !meta.data) return;
+      ctx.save();
+      ctx.font = '700 12px Sarabun, system-ui, -apple-system';
+      ctx.fillStyle = 'rgba(15,23,42,0.72)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      meta.data.forEach((bar, i)=>{
+        const v = Number(chart.data.datasets[0].data[i] || 0);
+        if (!v) return;
+        const p = bar.tooltipPosition();
+        ctx.fillText(String(v), p.x, p.y - 6);
+      });
+      ctx.restore();
+    }
+  };
+
   state.calChart = new Chart(canvas, {
     type: "bar",
     data: {
       labels,
       datasets: [
-        { label: "จำนวนรายการ", data: monthCounts }
+        {
+          label: "จำนวนรายการ",
+          data: monthCounts,
+          borderWidth: 1,
+          borderRadius: 14,
+          borderSkipped: false,
+          backgroundColor: (ctx)=>{
+            const {chart, dataIndex} = ctx;
+            const {ctx: c} = chart;
+            const area = chart.chartArea;
+            if (!area) return 'rgba(25,118,210,0.55)';
+            const g = c.createLinearGradient(0, area.top, 0, area.bottom);
+            const isSel = dataIndex === selectedIdx;
+            g.addColorStop(0, isSel ? 'rgba(25,118,210,0.90)' : 'rgba(25,118,210,0.55)');
+            g.addColorStop(1, isSel ? 'rgba(25,118,210,0.18)' : 'rgba(25,118,210,0.10)');
+            return g;
+          },
+          borderColor: (ctx)=> (ctx.dataIndex === selectedIdx ? 'rgba(13,71,161,0.95)' : 'rgba(25,118,210,0.65)'),
+          hoverBackgroundColor: 'rgba(13,71,161,0.75)',
+          maxBarThickness: 34,
+          categoryPercentage: 0.76,
+          barPercentage: 0.9,
+        }
       ]
     },
     options: {
-      responsive:true,
-      plugins:{ legend:{ display:false } },
-      scales:{
-        y:{ beginAtZero:true, ticks:{ precision:0 } }
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          padding: 10,
+          displayColors: false,
+          callbacks: {
+            title: (items)=> items?.[0]?.label ? `เดือน ${items[0].label}` : '',
+            label: (item)=> `จำนวนรายการ: ${item.formattedValue}`
+          }
+        }
+      },
+      layout: { padding: { top: 18, right: 8, bottom: 6, left: 8 } },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 12, weight: '700' }, color: 'rgba(71,85,105,0.9)' }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { precision: 0, stepSize: 1, color: 'rgba(71,85,105,0.85)' },
+          grid: { color: 'rgba(15,23,42,0.06)', drawBorder: false }
+        }
       }
-    }
+    },
+    plugins: [valueLabelPlugin]
   });
 }
 
