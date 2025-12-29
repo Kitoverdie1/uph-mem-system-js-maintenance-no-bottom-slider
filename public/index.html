@@ -50,7 +50,7 @@
           <span class="mi">📄</span> รายงานสรุป
         </button>
         <button class="menuBtn" data-route="qrlookup">
-          <span class="mi">🔎</span> เปิดจากรหัส (QR)
+          <span class="mi">🔎</span> แจ้งซ่อม (QR)
         </button>
       </nav>
 
@@ -89,21 +89,57 @@
         </div>
       </div>
 
-      <div class="field">
-        <label>👤 ชื่อผู้ใช้</label>
-        <input id="loginUsername" type="text" placeholder="เช่น admin" autocomplete="username" />
-      </div>
-      <div class="field">
-        <label>🔐 รหัสผ่าน</label>
-        <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
+      <div id="loginForm">
+        <div class="field">
+          <label>👤 ชื่อผู้ใช้</label>
+          <input id="loginUsername" type="text" placeholder="เช่น admin" autocomplete="username" />
+        </div>
+        <div class="field">
+          <label>🔐 รหัสผ่าน</label>
+          <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
+        </div>
+
+        <button id="btnLogin" class="btn btnPrimary w100" style="height:46px;">เข้าสู่ระบบ</button>
+        <div id="loginError" class="alert error hidden" style="margin-top:12px;"></div>
+
+        <div style="margin-top:12px; display:flex; gap:10px;">
+          <button id="btnShowRegister" class="btn btnGhost w100" style="height:44px;">สมัครผู้ใช้งานใหม่</button>
+        </div>
+
+        <div class="loginHint">
+          บัญชีทดสอบ: <b>admin/admin123</b> หรือ <b>user/user123</b>
+        </div>
       </div>
 
-      <button id="btnLogin" class="btn btnPrimary w100" style="height:46px;">เข้าสู่ระบบ</button>
-      <div id="loginError" class="alert error hidden" style="margin-top:12px;"></div>
+      <div id="registerForm" class="hidden">
+        <div class="field">
+          <label>🪪 ชื่อแสดงผล</label>
+          <input id="regDisplayName" type="text" placeholder="เช่น นายสมชาย ใจดี" autocomplete="name" />
+        </div>
+        <div class="field">
+          <label>👤 ชื่อผู้ใช้ (username)</label>
+          <input id="regUsername" type="text" placeholder="เช่น somchai" autocomplete="username" />
+        </div>
+        <div class="field">
+          <label>🔐 รหัสผ่าน</label>
+          <input id="regPassword" type="password" placeholder="อย่างน้อย 4 ตัวอักษร" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label>🔁 ยืนยันรหัสผ่าน</label>
+          <input id="regPassword2" type="password" placeholder="พิมพ์รหัสผ่านอีกครั้ง" autocomplete="new-password" />
+        </div>
 
-      <div class="loginHint">
-        บัญชีทดสอบ: <b>admin/admin123</b> หรือ <b>user/user123</b>
+        <button id="btnRegister" class="btn btnPrimary w100" style="height:46px;">สมัครสมาชิก</button>
+        <button id="btnBackToLogin" class="btn btnGhost w100" style="height:44px; margin-top:10px;">กลับไปหน้าเข้าสู่ระบบ</button>
+
+        <div id="registerError" class="alert error hidden" style="margin-top:12px;"></div>
+        <div id="registerSuccess" class="alert success hidden" style="margin-top:12px;"></div>
+
+        <div class="loginHint">
+          สมัครได้เฉพาะผู้ใช้งานทั่วไป (User) • บัญชี Admin ยังคงใช้เดิม
+        </div>
       </div>
+
     </div>
   </div>
 

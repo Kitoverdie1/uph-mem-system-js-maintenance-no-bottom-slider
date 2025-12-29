@@ -100,6 +100,7 @@ function ensureDbSchema(db){
   if(!Array.isArray(db.users)) db.users = [];
   if(!Array.isArray(db.assets)) db.assets = [];
   if(!Array.isArray(db.maintenanceStatusChoices)) db.maintenanceStatusChoices = [];
+  if(!Array.isArray(db.reporterChoices)) db.reporterChoices = [];
 
   // Ensure standard maintenance workflow choices exist (including "รอยืนยัน")
   // so that old databases still work and the Admin can confirm repair requests.
@@ -515,6 +516,47 @@ function nextAssetCode(db, kind){
 app.get("/api/meta", async (req, res) => {
   const db = await readDb();
   res.json({ ok: true, meta: db.meta, maintenanceStatusChoices: db.maintenanceStatusChoices || [] });
+});
+
+/**
+ * Reporters list (for QR repair reporting UI)
+ * - GET: return merged unique list from db.reporterChoices, db.users, and existing asset "ผู้แจ้งซ่อม"
+ * - POST: admin can add a name into db.reporterChoices
+ */
+app.get("/api/reporters", authRequired, async (req, res) => {
+  const db = await readDb();
+
+  const fromChoices = Array.isArray(db.reporterChoices) ? db.reporterChoices : [];
+  const fromUsers = (db.users || [])
+    .map(u => (u?.displayName || u?.username || "").toString().trim())
+    .filter(Boolean);
+  const fromAssets = (db.assets || [])
+    .map(a => (a?.["ผู้แจ้งซ่อม"] || "").toString().trim())
+    .filter(Boolean);
+
+  const seen = new Set();
+  const reporters = [...fromChoices, ...fromUsers, ...fromAssets]
+    .map(s => String(s || "").trim())
+    .filter(Boolean)
+    .filter(s => (seen.has(s) ? false : (seen.add(s), true)))
+    .sort((a,b) => a.localeCompare(b, "th"));
+
+  res.json({ ok: true, reporters });
+});
+
+app.post("/api/reporters", adminRequired, async (req, res) => {
+  const name = (req.body?.name || "").toString().trim();
+  if (!name) return res.status(400).json({ ok: false, message: "กรุณาระบุชื่อผู้แจ้งซ่อม" });
+  if (name.length > 120) return res.status(400).json({ ok: false, message: "ชื่อยาวเกินไป" });
+
+  const db = await readDb();
+  const list = Array.isArray(db.reporterChoices) ? db.reporterChoices : [];
+  if (!list.some(x => String(x).trim() === name)) {
+    list.push(name);
+    db.reporterChoices = list;
+    await writeDb(db);
+  }
+  res.json({ ok: true, reporters: db.reporterChoices });
 });
 
 /** -----------------------------
@@ -1190,6 +1232,57 @@ app.post("/api/import/db", adminRequired, excelUpload.single("json"), async (req
 
 
 
+
+
+/** -----------------------------
+ *  Register (public) - user only
+ *  สมัครสมาชิกได้เฉพาะบทบาท User เท่านั้น (Admin ยังคงสร้างเองใน db.json)
+ * ------------------------------*/
+app.post("/api/register", async (req, res) => {
+  try{
+    let { username, password, displayName } = req.body || {};
+    username = String(username || "").trim();
+    password = String(password || "");
+    displayName = String(displayName || "").trim();
+
+    if(!username || !password || !displayName){
+      return res.status(400).json({ ok:false, message: "กรุณากรอกชื่อผู้ใช้ รหัสผ่าน และชื่อแสดงผลให้ครบถ้วน" });
+    }
+    // อนุญาตเฉพาะ a-z 0-9 . _ - (3-24 ตัวอักษร) เพื่อกันช่องว่าง/อักขระแปลก
+    if(!/^[a-zA-Z0-9._-]{3,24}$/.test(username)){
+      return res.status(400).json({ ok:false, message: "ชื่อผู้ใช้ต้องเป็น a-z 0-9 . _ - และยาว 3-24 ตัวอักษร" });
+    }
+    // กันชื่อที่สงวนไว้
+    if(username.toLowerCase() === "admin"){
+      return res.status(400).json({ ok:false, message: "ชื่อผู้ใช้นี้ถูกสงวนไว้" });
+    }
+    if(password.length < 4){
+      return res.status(400).json({ ok:false, message: "รหัสผ่านต้องยาวอย่างน้อย 4 ตัวอักษร" });
+    }
+
+    const db = await readDb();
+    const exists = (db.users || []).some(u => String(u.username || "").toLowerCase() === username.toLowerCase());
+    if(exists){
+      return res.status(409).json({ ok:false, message: "ชื่อผู้ใช้นี้ถูกใช้แล้ว" });
+    }
+
+    const newUser = {
+      username,
+      password,
+      displayName,
+      role: "user",
+      createdAt: new Date().toISOString()
+    };
+
+    db.users.push(newUser);
+    await writeDb(db);
+
+    res.json({ ok:true, user: { username, displayName, role: "user" } });
+  }catch(e){
+    console.error("register error", e);
+    res.status(500).json({ ok:false, message: "เกิดข้อผิดพลาดในการสมัครสมาชิก" });
+  }
+});
 
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body || {};

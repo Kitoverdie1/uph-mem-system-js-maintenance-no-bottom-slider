@@ -39,6 +39,7 @@ async function load(){
   const imgBox = document.getElementById("qrImgBox");
   const caption = document.getElementById("qrCodeCaption");
   const btnDownloadQr = document.getElementById("btnDownloadQr");
+  const reporterSel = document.getElementById("qrReporterSelect");
 
   if(!code){
     caption.textContent = "ไม่พบรหัส (code)";
@@ -70,6 +71,11 @@ async function load(){
     fillMaintChoices(choices);
   }catch{}
 
+  // Load reporter choices (if logged in)
+  try{
+    await fillReporterChoices(reporterSel);
+  }catch{}
+
   try{
     const r = await fetchJson(`/api/assets/by-code/${encodeURIComponent(code)}`);
     const a = r.asset;
@@ -82,7 +88,7 @@ async function load(){
 
     // kv list
     const keysLeft = ["ชื่อ","รุ่น","หมายเลขเครื่อง","AssetID","สถานะ","สถานะแจ้งซ่อม"];
-    const keysRight = ["ต้นทุนต่อหน่วย","ประเภทครุภัณฑ์","หมวดครุภัณฑ์","สถานที่ใช้งาน (ปัจจุบัน)","วันที่แจ้งซ่อมล่าสุด","หมายเหตุการซ่อม"];
+    const keysRight = ["ต้นทุนต่อหน่วย","ประเภทครุภัณฑ์","หมวดครุภัณฑ์","สถานที่ใช้งาน (ปัจจุบัน)","ผู้แจ้งซ่อม","วันที่แจ้งซ่อมล่าสุด","เวลาที่แจ้งซ่อม","หมายเหตุการซ่อม"];
     const all = [...keysLeft, ...keysRight];
     kv.innerHTML = all.map(k=>`
       <div class="kvItem">
@@ -102,6 +108,29 @@ async function load(){
     maintSel.value = (a["สถานะแจ้งซ่อม"] || "");
     document.getElementById("qrMaintDate").value = normalizeDate(a["วันที่แจ้งซ่อมล่าสุด"] || "");
     document.getElementById("qrMaintNote").value = (a["หมายเหตุการซ่อม"] || "");
+
+    // reporter (Admin can choose; User is locked)
+    if(reporterSel){
+      const currentReporter = String(a["ผู้แจ้งซ่อม"] || "").trim();
+      const mine = String(currentUser?.displayName || currentUser?.username || "").trim();
+      const prefer = currentReporter || mine;
+      if(prefer){
+        ensureSelectHasOption(reporterSel, prefer);
+        reporterSel.value = prefer;
+      }
+      if((currentUser?.role || "") !== "admin"){
+        // keep only user's own name to avoid confusion
+        if(mine){
+          reporterSel.innerHTML = "";
+          const opt = document.createElement("option");
+          opt.value = mine;
+          opt.textContent = mine;
+          reporterSel.appendChild(opt);
+          reporterSel.value = mine;
+        }
+        reporterSel.disabled = true;
+      }
+    }
 
     // If user is not admin and current status is already in progress/done, lock status change.
     if((currentUser?.role || "") !== "admin"){
@@ -130,7 +159,8 @@ async function load(){
         const payload = {
           "สถานะแจ้งซ่อม": document.getElementById("qrMaintSelect").value,
           "วันที่แจ้งซ่อมล่าสุด": document.getElementById("qrMaintDate").value || "",
-          "หมายเหตุการซ่อม": document.getElementById("qrMaintNote").value || ""
+          "หมายเหตุการซ่อม": document.getElementById("qrMaintNote").value || "",
+          "ผู้แจ้งซ่อม": (document.getElementById("qrReporterSelect")?.value || "").trim()
         };
         await fetchJson(`/api/assets/by-code/${encodeURIComponent(code)}`, { method:"PUT", body: payload });
         showOk("บันทึกเรียบร้อยแล้ว");
@@ -143,6 +173,87 @@ async function load(){
     kv.innerHTML = `<div class="alert error">${esc(e.message || "ไม่พบข้อมูล")}</div>`;
     imgBox.innerHTML = `<div class="muted">-</div>`;
   }
+}
+
+async function fillReporterChoices(sel){
+  if(!sel) return;
+  sel.innerHTML = "";
+
+  if(!token){
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "กรุณา Login เพื่อระบุผู้แจ้งซ่อม";
+    sel.appendChild(opt);
+    sel.disabled = true;
+    return;
+  }
+
+  let reporters = [];
+  try{
+    const r = await fetchJson("/api/reporters");
+    reporters = Array.isArray(r.reporters) ? r.reporters : [];
+  }catch{
+    reporters = [];
+  }
+
+  const mine = String(currentUser?.displayName || currentUser?.username || "").trim();
+  if(mine && !reporters.includes(mine)) reporters.unshift(mine);
+
+  // De-dup + sort (Thai)
+  const seen = new Set();
+  reporters = reporters
+    .map(s => String(s || "").trim())
+    .filter(Boolean)
+    .filter(s => (seen.has(s) ? false : (seen.add(s), true)))
+    .sort((a,b)=> a.localeCompare(b, "th"));
+
+  for(const name of reporters){
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+
+  // Admin: allow add new
+  if((currentUser?.role || "") === "admin"){
+    const add = document.createElement("option");
+    add.value = "__add__";
+    add.textContent = "➕ เพิ่มชื่อใหม่…";
+    sel.appendChild(add);
+
+    sel.addEventListener("change", async ()=>{
+      if(sel.value !== "__add__") return;
+      const name = prompt("เพิ่มชื่อผู้แจ้งซ่อม (ผู้แจ้งซ่อม)");
+      const v = String(name || "").trim();
+      if(!v){
+        sel.value = mine || "";
+        return;
+      }
+      try{
+        await fetchJson("/api/reporters", { method:"POST", body: { name: v } });
+      }catch{ /* ถ้าบันทึกไม่ได้ ยังให้ใช้งานเฉพาะหน้านี้ได้ */ }
+      ensureSelectHasOption(sel, v);
+      sel.value = v;
+    });
+  }
+
+  // Default selection
+  if(mine) sel.value = mine;
+}
+
+function ensureSelectHasOption(sel, value){
+  if(!sel || !value) return;
+  const v = String(value).trim();
+  if(!v) return;
+  const exists = Array.from(sel.options).some(o => o.value === v);
+  if(exists) return;
+  const opt = document.createElement("option");
+  opt.value = v;
+  opt.textContent = v;
+  // insert before add option if exists
+  const addIdx = Array.from(sel.options).findIndex(o => o.value === "__add__");
+  if(addIdx >= 0) sel.insertBefore(opt, sel.options[addIdx]);
+  else sel.appendChild(opt);
 }
 
 function normalizeDate(v){

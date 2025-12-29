@@ -3,6 +3,7 @@
 const API = {
   async meta(){ return fetchJson("/api/meta"); },
   async login(username, password){ return fetchJson("/api/login", { method:"POST", body: { username, password } }); },
+  async register(username, password, displayName){ return fetchJson("/api/register", { method:"POST", body: { username, password, displayName } }); },
   async me(){ return fetchJson("/api/me"); },
   async listAssets(q=""){ 
     const u = new URL("/api/assets", location.origin);
@@ -1001,14 +1002,14 @@ function renderReports(container){
 
 function renderQrLookup(container){
 
-  setPageHeader("เปิดข้อมูลจากรหัส (QR)", "เลือกจากรายการได้เลย ไม่ต้องพิมพ์รหัสเอง (คลิกแถวเพื่อเปิดหน้า QR)");
+  setPageHeader("แจ้งซ่อม (QR)", "เลือกครุภัณฑ์จากรายการ แล้วเข้าสู่หน้าแจ้งซ่อม/อัปเดตสถานะแจ้งซ่อม");
 
   const card = el("div", "card");
   card.innerHTML = `
     <div class="cardHeader">
       <div>
-        <div class="cardTitle">เปิดหน้าข้อมูลจากรหัส</div>
-        <div class="cardSub">เลือกจากรายการด้านล่าง แล้วกด “เปิดหน้า QR” หรือคลิกแถวเพื่อเปิดทันที</div>
+        <div class="cardTitle">เลือกครุภัณฑ์เพื่อแจ้งซ่อม</div>
+        <div class="cardSub">เลือกจากรายการด้านล่าง แล้วกด “แจ้งซ่อม” หรือคลิกแถวเพื่อเข้าสู่หน้าแจ้งซ่อมทันที</div>
       </div>
       <div class="row gap8">
         <span class="pill">${escapeHtml(state.assets.length)} รายการ</span>
@@ -1021,19 +1022,19 @@ function renderQrLookup(container){
         <select id="qrSelect" style="height:46px;">
           <option value="">— เลือกจากรายการ —</option>
         </select>
-        <div class="help">Tip: ถ้ารายการเยอะ สามารถใช้ Search ในหน้า “รายการครุภัณฑ์” แล้วคลิกดาวน์โหลด/เปิด QR ได้เช่นกัน</div>
+        <div class="help">Tip: ถ้ารายการเยอะ สามารถใช้ Search ในหน้า “รายการครุภัณฑ์” แล้วกดปุ่ม “แจ้งซ่อม” จากแต่ละรายการได้เช่นกัน</div>
       </div>
 
       <div class="field">
-        <label>เปิดหน้า</label>
-        <button id="btnOpenQr" class="btn btnPrimary" style="height:46px; width:100%;">เปิดหน้า QR</button>
+        <label>ไปที่หน้า</label>
+        <button id="btnOpenQr" class="btn btnPrimary" style="height:46px; width:100%;">แจ้งซ่อม</button>
       </div>
     </div>
 
     <div id="qrLookupMsg" class="alert error hidden" style="margin-top:12px;"></div>
 
     <div style="margin-top:14px;">
-      <div class="muted" style="font-weight:900; margin-bottom:8px;">คลิกที่แถวเพื่อเปิดหน้า QR ทันที</div>
+      <div class="muted" style="font-weight:900; margin-bottom:8px;">คลิกที่แถวเพื่อเข้าสู่หน้าแจ้งซ่อมทันที</div>
       <div class="tableWrap">
         <table class="clickableTable">
           <thead>
@@ -1042,7 +1043,7 @@ function renderQrLookup(container){
               <th style="min-width:220px;">ชื่อ</th>
               <th style="min-width:160px;">รุ่น</th>
               <th style="min-width:160px;">สถานที่ใช้งาน</th>
-              <th style="min-width:110px;">เปิด</th>
+              <th style="min-width:110px;">แจ้งซ่อม</th>
             </tr>
           </thead>
           <tbody id="qrTableBody">
@@ -1090,7 +1091,7 @@ function renderQrLookup(container){
           <td>${name}</td>
           <td>${model}</td>
           <td>${loc}</td>
-          <td><button class="btn btnGhost btnOpenRow" data-code="${code}" style="height:32px;">เปิด</button></td>
+          <td><button class="btn btnGhost btnOpenRow" data-code="${code}" style="height:32px;">แจ้งซ่อม</button></td>
         </tr>
       `;
     }).join("");
@@ -2349,7 +2350,7 @@ function openAssetEditor(asset, opts={}){
               <div class="cardSub">รหัส: <b>${escapeHtml(code)}</b> • ชื่อ: <b>${escapeHtml(name)}</b></div>
             </div>
             <div class="row gap8">
-              ${asset.id ? `<a class="btn btnGhost" href="/qr.html?code=${encodeURIComponent(code)}" target="_blank">เปิดหน้า QR</a>` : ``}
+              ${asset.id ? `<a class="btn btnGhost" href="/qr.html?code=${encodeURIComponent(code)}" target="_blank">แจ้งซ่อม</a>` : ``}
             </div>
           </div>
 
@@ -2652,26 +2653,90 @@ async function bootstrap(){
 }
 
 document.addEventListener("DOMContentLoaded", ()=>{
-  // login
+  // login + register
+  const showLoginForm = ()=>{
+    const lf = document.getElementById("loginForm");
+    const rf = document.getElementById("registerForm");
+    if (rf) rf.classList.add("hidden");
+    if (lf) lf.classList.remove("hidden");
+    $("#loginError")?.classList.add("hidden");
+    $("#registerError")?.classList.add("hidden");
+    $("#registerSuccess")?.classList.add("hidden");
+  };
+
+  const showRegisterForm = ()=>{
+    const lf = document.getElementById("loginForm");
+    const rf = document.getElementById("registerForm");
+    if (lf) lf.classList.add("hidden");
+    if (rf) rf.classList.remove("hidden");
+    $("#registerError")?.classList.add("hidden");
+    $("#registerSuccess")?.classList.add("hidden");
+  };
+
+  async function doLogin(username, password){
+    const r = await API.login(username, password);
+    state.token = r.token;
+    localStorage.setItem("mem_token", state.token);
+    state.user = r.user;
+    $("#userDisplayName").textContent = state.user.displayName;
+    $("#userRole").textContent = state.user.role.toUpperCase();
+    $("#userAvatar").textContent = initials(state.user.displayName);
+    await loadAssets();
+    try{ await loadCalibration(); }catch{}
+    showApp();
+    routeTo("home");
+    return r;
+  }
+
   $("#btnLogin").addEventListener("click", async ()=>{
     const u = $("#loginUsername").value.trim();
     const p = $("#loginPassword").value;
     $("#loginError").classList.add("hidden");
     try{
-      const r = await API.login(u,p);
-      state.token = r.token;
-      localStorage.setItem("mem_token", state.token);
-      state.user = r.user;
-      $("#userDisplayName").textContent = state.user.displayName;
-      $("#userRole").textContent = state.user.role.toUpperCase();
-      $("#userAvatar").textContent = initials(state.user.displayName);
-      await loadAssets();
-      try{ await loadCalibration(); }catch{}
-      showApp();
-      routeTo("home");
+      await doLogin(u,p);
     }catch(e){
       $("#loginError").textContent = e.message || "เข้าสู่ระบบไม่สำเร็จ";
       $("#loginError").classList.remove("hidden");
+    }
+  });
+
+  // show register
+  $("#btnShowRegister")?.addEventListener("click", ()=>{
+    showRegisterForm();
+  });
+  $("#btnBackToLogin")?.addEventListener("click", ()=>{
+    showLoginForm();
+  });
+
+  // register (user only)
+  $("#btnRegister")?.addEventListener("click", async ()=>{
+    const displayName = $("#regDisplayName").value.trim();
+    const u = $("#regUsername").value.trim();
+    const p = $("#regPassword").value;
+    const p2 = $("#regPassword2").value;
+
+    $("#registerError")?.classList.add("hidden");
+    $("#registerSuccess")?.classList.add("hidden");
+
+    if(!displayName || !u || !p){
+      $("#registerError").textContent = "กรุณากรอกข้อมูลให้ครบถ้วน";
+      $("#registerError").classList.remove("hidden");
+      return;
+    }
+    if(p !== p2){
+      $("#registerError").textContent = "รหัสผ่านไม่ตรงกัน";
+      $("#registerError").classList.remove("hidden");
+      return;
+    }
+
+    try{
+      await API.register(u, p, displayName);
+      $("#registerSuccess").textContent = "สมัครสำเร็จ กำลังเข้าสู่ระบบ...";
+      $("#registerSuccess").classList.remove("hidden");
+      await doLogin(u,p);
+    }catch(e){
+      $("#registerError").textContent = e.message || "สมัครสมาชิกไม่สำเร็จ";
+      $("#registerError").classList.remove("hidden");
     }
   });
 
